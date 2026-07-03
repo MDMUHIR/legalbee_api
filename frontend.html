@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Legal Bee - Ask Legal Questions</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+
+      header {
+        text-align: center;
+        color: white;
+        margin-bottom: 40px;
+        animation: fadeIn 0.6s ease-in;
+      }
+
+      header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      }
+
+      header p {
+        font-size: 1.1em;
+        opacity: 0.9;
+      }
+
+      .card {
+        background: white;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        animation: slideUp 0.6s ease-out;
+      }
+
+      .input-group {
+        margin-bottom: 20px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 600;
+        color: #333;
+      }
+
+      textarea {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        font-size: 1em;
+        font-family: inherit;
+        resize: vertical;
+        min-height: 100px;
+        transition: border-color 0.3s;
+      }
+
+      textarea:focus {
+        outline: none;
+        border-color: #667eea;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      }
+
+      .button-group {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      button {
+        flex: 1;
+        padding: 12px 24px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 1em;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .clear-btn {
+        background: #f0f0f0;
+        color: #666;
+        flex: 0.3;
+      }
+
+      .clear-btn:hover {
+        background: #e0e0e0;
+        box-shadow: none;
+      }
+
+      .language-select {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      .language-select label {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        margin: 0;
+        cursor: pointer;
+      }
+
+      .language-select input[type="radio"] {
+        margin-right: 8px;
+        cursor: pointer;
+      }
+
+      .response-section {
+        margin-top: 30px;
+        padding-top: 30px;
+        border-top: 2px solid #f0f0f0;
+        display: none;
+      }
+
+      .response-section.show {
+        display: block;
+        animation: slideUp 0.6s ease-out;
+      }
+
+      .answer-box {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+        line-height: 1.6;
+        color: #333;
+      }
+
+      .status {
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        font-weight: 500;
+      }
+
+      .status.loading {
+        background: #e3f2fd;
+        color: #1976d2;
+      }
+
+      .status.success {
+        background: #e8f5e9;
+        color: #388e3c;
+      }
+
+      .status.error {
+        background: #ffebee;
+        color: #d32f2f;
+      }
+
+      .metadata {
+        margin-top: 15px;
+        font-size: 0.9em;
+        color: #999;
+        padding-top: 15px;
+        border-top: 1px solid #e0e0e0;
+      }
+
+      .metadata span {
+        display: block;
+        margin: 5px 0;
+      }
+
+      .loading-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #667eea;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 8px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      @keyframes slideUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .info-box {
+        background: #e3f2fd;
+        border-left: 4px solid #1976d2;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+        font-size: 0.95em;
+        color: #0d47a1;
+      }
+
+      .api-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 15px;
+        background: #e8f5e9;
+        color: #388e3c;
+        border-radius: 20px;
+        font-size: 0.9em;
+        margin-bottom: 20px;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        background: #388e3c;
+        border-radius: 50%;
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .api-status.offline {
+        background: #ffebee;
+        color: #d32f2f;
+      }
+
+      .api-status.offline .status-dot {
+        background: #d32f2f;
+      }
+
+      @media (max-width: 600px) {
+        header h1 {
+          font-size: 1.8em;
+        }
+
+        .card {
+          padding: 20px;
+        }
+
+        button {
+          padding: 10px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>⚖️ Legal Bee</h1>
+        <p>Ask Bangladeshi Legal Questions in Bengali or English</p>
+      </header>
+
+      <div class="card">
+        <!-- API Status -->
+        <div class="api-status" id="apiStatus">
+          <span class="status-dot"></span>
+          <span>Checking connection...</span>
+        </div>
+
+        <!-- Info Box -->
+        <div class="info-box">
+          💡 Ask legal questions about Bangladeshi law. The system searches a
+          verified legal database and provides citations. Consult a lawyer for
+          specific legal advice.
+        </div>
+
+        <!-- Question Input -->
+        <div class="input-group">
+          <label for="question">Your Legal Question</label>
+          <textarea
+            id="question"
+            placeholder="E.g., What is the punishment for theft under Bangladeshi law?
+Or: বাংলাদেশে চুরির শাস্তি কী?"
+            spellcheck="true"
+          ></textarea>
+        </div>
+
+        <!-- User Type Selection -->
+        <div class="language-select">
+          <label>
+            <input type="radio" name="user_type" value="general" checked />
+            General Public
+          </label>
+          <label>
+            <input type="radio" name="user_type" value="lawyer" />
+            Lawyer / Legal Professional
+          </label>
+        </div>
+
+        <!-- Language Selection -->
+        <div class="language-select">
+          <label>
+            <input type="radio" name="language" value="auto" checked />
+            Auto-detect Language
+          </label>
+          <label>
+            <input type="radio" name="language" value="en" />
+            English
+          </label>
+          <label>
+            <input type="radio" name="language" value="bn" />
+            Bengali
+          </label>
+        </div>
+
+        <!-- Buttons -->
+        <div class="button-group">
+          <button id="askBtn" onclick="askQuestion()">
+            Ask Legal Question
+          </button>
+          <button class="clear-btn" onclick="clearAll()">Clear</button>
+        </div>
+
+        <!-- Response Section -->
+        <div class="response-section" id="responseSection">
+          <div id="statusMessage" class="status"></div>
+          <div id="answerBox" class="answer-box"></div>
+          <div class="metadata" id="metadata"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE_URL = "http://localhost:8000/api";
+
+      // Check API connection on page load
+      document.addEventListener("DOMContentLoaded", async () => {
+        await checkAPIConnection();
+      });
+
+      async function checkAPIConnection() {
+        try {
+          const response = await fetch(`${API_BASE_URL}/health`, {
+            method: "GET",
+          });
+
+          const statusEl = document.getElementById("apiStatus");
+          if (response.ok) {
+            statusEl.className = "api-status";
+            statusEl.innerHTML =
+              '<span class="status-dot"></span><span>✅ Connected to Legal Bee API</span>';
+          } else {
+            updateAPIStatus(false);
+          }
+        } catch (error) {
+          updateAPIStatus(false);
+        }
+      }
+
+      function updateAPIStatus(isOnline) {
+        const statusEl = document.getElementById("apiStatus");
+        if (isOnline) {
+          statusEl.className = "api-status";
+          statusEl.innerHTML =
+            '<span class="status-dot"></span><span>✅ Connected to Legal Bee API</span>';
+        } else {
+          statusEl.className = "api-status offline";
+          statusEl.innerHTML =
+            '<span class="status-dot"></span><span>⚠️ API Not Connected (localhost:8000)</span>';
+        }
+      }
+
+      async function askQuestion() {
+        const question = document.getElementById("question").value.trim();
+        const language = document.querySelector(
+          'input[name="language"]:checked',
+        ).value;
+        const userType = document.querySelector(
+          'input[name="user_type"]:checked',
+        ).value;
+
+        if (!question) {
+          showError("Please enter a legal question");
+          return;
+        }
+
+        if (question.length < 3) {
+          showError("Question must be at least 3 characters long");
+          return;
+        }
+
+        await sendRequest(question, language === "auto" ? null : language, userType);
+      }
+
+      async function sendRequest(question, language, userType = "general") {
+        const askBtn = document.getElementById("askBtn");
+        askBtn.disabled = true;
+
+        const responseSection = document.getElementById("responseSection");
+        responseSection.classList.add("show");
+
+        const statusMessage = document.getElementById("statusMessage");
+        statusMessage.className = "status loading";
+        statusMessage.innerHTML =
+          '<span class="loading-spinner"></span> Searching legal database...';
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/ask`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              question: question,
+              language: language,
+              user_type: userType,
+            }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || `HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+
+          statusMessage.className = "status success";
+          statusMessage.innerHTML = "✅ Answer found in legal database";
+
+          const answerBox = document.getElementById("answerBox");
+          answerBox.textContent = data.answer;
+
+          const metadata = document.getElementById("metadata");
+          metadata.innerHTML = `
+                    <span><strong>Language:</strong> ${data.language_detected === "bn" ? "Bengali (বাংলা)" : "English"}</span>
+                    <span><strong>User Type:</strong> ${userType === "lawyer" ? "Lawyer (Detailed)" : "General (Simple)"}</span>
+                    <span><strong>Source:</strong> ${data.source}</span>
+                    <span><strong>Time:</strong> ${new Date(data.timestamp).toLocaleString()}</span>
+                    <span style="margin-top: 10px; color: #666; font-style: italic;">Always consult a licensed lawyer for specific legal advice.</span>
+                `;
+
+          // Re-check API connection
+          await checkAPIConnection();
+        } catch (error) {
+          showError(error.message);
+        } finally {
+          askBtn.disabled = false;
+        }
+      }
+
+      function showError(message) {
+        const responseSection = document.getElementById("responseSection");
+        responseSection.classList.add("show");
+
+        const statusMessage = document.getElementById("statusMessage");
+        statusMessage.className = "status error";
+        statusMessage.innerHTML = `❌ ${message}`;
+
+        const answerBox = document.getElementById("answerBox");
+        answerBox.textContent = "";
+
+        const metadata = document.getElementById("metadata");
+        metadata.innerHTML = "";
+      }
+
+      function clearAll() {
+        document.getElementById("question").value = "";
+        document.getElementById("responseSection").classList.remove("show");
+        document.getElementById("question").focus();
+      }
+
+      // Allow Enter key to submit (Ctrl+Enter for textarea)
+      document.getElementById("question").addEventListener("keydown", (e) => {
+        if (e.ctrlKey && e.key === "Enter") {
+          askQuestion();
+        }
+      });
+    </script>
+  </body>
+</html>

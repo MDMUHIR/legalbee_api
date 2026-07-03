@@ -1,0 +1,33 @@
+
+The complete ingestion pipeline is built and verified. Here's a summary of what was created:
+ingestion/ package — 9 modules
+Module
+loader.py
+cleaner.py
+metadata.py
+structure_parser.py
+chunker.py
+embeddings.py
+qdrant_store.py
+pipeline.py
+utils.py
+Verified on 3 sample PDFs
+- act-print-1630 (4-page Bangla amendment): 3 sections → 5 chunks
+- act-print-1631 (4-page Bangla act): 6 sections, 4 Bangla-consonant clauses detected → 7 chunks
+- act-print-1632 (21-page mixed language): 43 sections → 45 chunks
+Usage
+# Full batch ingestion
+python -m ingestion.pipeline --dir ./data
+
+# Single file
+python -m ingestion.pipeline --file data/act-print-1630.pdf
+
+# Check status
+python -m ingestion.pipeline --status
+
+# Programmatic
+from ingestion import IngestionPipeline
+pipeline = IngestionPipeline(data_dir="./data")
+pipeline.run()
+
+uv run ingest.py --no-resume

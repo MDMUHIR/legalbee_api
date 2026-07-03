@@ -1,0 +1,28 @@
+[project]
+name = "legal-bee"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "langchain",
+    "langchain-core",
+    "langchain-community",
+    "langchain-text-splitters",
+    "langchain-google-genai",
+    "langchain-groq",
+    "langchain-huggingface>=1.2.2",
+    "langchain-qdrant",
+    "pypdf",
+    "python-docx",
+    "python-dotenv",
+    "qdrant-client",
+    "sentence-transformers",
+    "pymupdf>=1.27.2.3",
+    "pydantic>=2.13.3",
+    "rich>=15.0.0",
+    "tqdm>=4.67.3",
+    "fastembed>=0.8.0",
+]
