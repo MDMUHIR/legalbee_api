@@ -9,3 +9,10 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Data files (PDFs stored in Qdrant, not needed in repo)
+data/
+*.pdf
+
+# Logs
+logs/
