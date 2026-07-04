@@ -259,6 +259,8 @@ python tests/test_ingestion.py   # 33 tests (clauses, hierarchy, chunking, valid
 
 ## Deployment
 
+### Local
+
 ```bash
 # Development
 python -m app.main
@@ -266,6 +268,22 @@ python -m app.main
 # Production (4 workers)
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
+
+### Hugging Face Spaces (Docker)
+
+1. Create a new Space at https://huggingface.co/new-space with **Docker** as the SDK
+2. Clone the Space repo and copy this project into it (or push directly)
+3. Set the following **Secrets** in your Space settings (Settings → Repository secrets):
+
+   | Secret | Description |
+   |---|---|
+   | `QDRANT_URL` | Your Qdrant Cloud cluster URL |
+   | `QDRANT_API_KEY` | Your Qdrant Cloud API key |
+   | `GROQ_API_KEY` | Your Groq API key (or `GOOGLE_API_KEY` for Gemini) |
+   | `LLM_PROVIDER` | `groq` or `gemini` |
+   | `LLM_MODEL` | e.g. `llama-3.3-70b-versatile` |
+
+4. The Space auto-builds from the `Dockerfile`. The app starts on port `7860` — the frontend UI is served at `/` and the API docs at `/api/docs`.
 
 ---
 

@@ -7,10 +7,13 @@ Run:
 """
 
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from app.api.routes import router
 from app.config import config
@@ -42,20 +45,19 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 
-@app.get("/", tags=["Health"])
-async def root():
-    return {
-        "message": "Welcome to Legal Bee API",
-        "docs": "/api/docs",
-        "redoc": "/api/redoc",
-        "endpoints": {
-            "chat": "POST /api/chat",
-            "search": "POST /api/search",
-            "analyze": "POST /api/analyze",
-            "summary": "POST /api/summary",
-            "health": "GET /api/health",
-        },
-    }
+_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend.html"
+
+
+@app.get("/", response_class=HTMLResponse, tags=["UI"])
+async def serve_frontend():
+    if _FRONTEND_PATH.exists():
+        return _FRONTEND_PATH.read_text(encoding="utf-8")
+    return """
+    <html><body>
+    <h1>Legal Bee API</h1>
+    <p>Frontend not found. Visit <a href="/api/docs">/api/docs</a> for API docs.</p>
+    </body></html>
+    """
 
 
 @app.exception_handler(HTTPException)
@@ -79,4 +81,5 @@ async def general_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

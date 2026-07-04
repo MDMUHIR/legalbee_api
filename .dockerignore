@@ -1,0 +1,15 @@
+__pycache__
+.venv
+.env
+.git
+.gitignore
+*.pyc
+*.pyo
+data/
+logs/
+tests/
+qdrant_management/
+scripts/
+*.md
+*.db
+.DS_Store
