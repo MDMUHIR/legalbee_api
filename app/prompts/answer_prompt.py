@@ -75,4 +75,9 @@ def get_answer_prompt(mode: str, language: str, **kwargs) -> str:
         "analysis": ANALYSIS_PROMPT_BN if language == "bn" else ANALYSIS_PROMPT_EN,
     }
     template = prompts.get(mode, "")
-    return template.format(**kwargs) if template else ""
+    if not template:
+        return ""
+    result = template
+    for key, value in kwargs.items():
+        result = result.replace("{" + key + "}", str(value))
+    return result

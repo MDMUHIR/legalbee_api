@@ -38,9 +38,11 @@ class QdrantService:
         query_filter: Optional[Filter] = None,
     ) -> list[dict]:
         try:
-            results = self.client.search(
+            from qdrant_client.models import QueryRequest
+            results = self.client.query_points(
                 collection_name=self.collection,
-                query_vector=(self.vector_name, vector),
+                query=vector,
+                using=self.vector_name,
                 limit=limit,
                 score_threshold=score_threshold,
                 query_filter=query_filter,
@@ -52,7 +54,7 @@ class QdrantService:
                     "score": r.score,
                     "payload": r.payload or {},
                 }
-                for r in results
+                for r in results.points
             ]
         except Exception as e:
             logger.error("Qdrant search failed: %s", e)

@@ -1,4 +1,12 @@
-"""Legal Bee RAG Agent — main entry point for legal queries."""
+"""Legal Bee RAG Agent — multi-agent entry point for legal queries.
+
+Routes queries through a multi-agent LangGraph workflow with specialized agents:
+  - Law Search Agent     → specific provisions
+  - Legal Analysis Agent → fact scenarios
+  - Act Summary Agent    → summarize acts
+  - Amendment Compare    → what changed
+  - Legal QA Agent       → general questions (default)
+"""
 
 from __future__ import annotations
 
@@ -10,16 +18,16 @@ from app.agents.workflow import create_workflow, AgentState
 from app.retrieval.intent_detector import IntentDetector
 from app.retrieval.retriever import LegalRetriever
 from app.retrieval.citation_builder import CitationBuilder
-from app.retrieval.query_rewriter import QueryRewriter
-from app.prompts.answer_prompt import get_answer_prompt
-from app.services.llm_service import get_llm_service
 from app.models.schemas import AgentResponse, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 
 class LegalBeeAgent:
-    """Production Legal RAG agent for Bangladeshi law.
+    """Multi-agent Legal RAG system for Bangladeshi law.
+
+    All methods route through the LangGraph workflow which
+    auto-selects the appropriate specialized agent.
 
     Usage:
         agent = LegalBeeAgent()
@@ -33,8 +41,9 @@ class LegalBeeAgent:
         self.intent_detector = IntentDetector()
         self.retriever = LegalRetriever()
         self.citation_builder = CitationBuilder()
-        self.rewriter = QueryRewriter()
         self.workflow = create_workflow()
+
+    # ── Main chat: through multi-agent workflow ────────────────────────
 
     def chat(
         self,
@@ -54,6 +63,8 @@ class LegalBeeAgent:
             "rewritten_question": "",
             "query_type": "",
             "legal_domain": "",
+            "routed_agent": "",
+            "agent_output": "",
             "retrieved_chunks": [],
             "context": "",
             "answer": "",
@@ -78,9 +89,7 @@ class LegalBeeAgent:
             )
 
         execution_ms = (time.time() - t0) * 1000
-
         chunks_raw = result.get("retrieved_chunks", [])
-        # Convert dicts back to RetrievedChunk if needed
         retrieved_chunks: list[RetrievedChunk] = []
         for c in chunks_raw:
             if isinstance(c, RetrievedChunk):
@@ -103,6 +112,8 @@ class LegalBeeAgent:
             error=result.get("error"),
         )
 
+    # ── Search: direct retrieval (no LLM) ──────────────────────────────
+
     def search(
         self,
         query: str,
@@ -115,11 +126,9 @@ class LegalBeeAgent:
             language = self.intent_detector.detect_language(query)
 
         chunks = self.retriever.retrieve(query, top_k=top_k, metadata_filter=filters)
-
         citations = self.citation_builder.build(chunks)
         references = self.citation_builder.build_references(chunks)
         context = self.citation_builder.build_context_string(chunks)
-
         confidence = "high" if len(chunks) >= 5 else "medium" if len(chunks) >= 2 else "low"
 
         return AgentResponse(
@@ -135,6 +144,8 @@ class LegalBeeAgent:
             execution_time_ms=(time.time() - t0) * 1000,
         )
 
+    # ── Analyze: via workflow with intent override ─────────────────────
+
     def analyze(
         self,
         facts: str,
@@ -144,44 +155,62 @@ class LegalBeeAgent:
         if not language:
             language = self.intent_detector.detect_language(facts)
 
-        rewritten = self.rewriter.rewrite(facts, language)
-        chunks = self.retriever.retrieve(rewritten, top_k=12)
-        citations = self.citation_builder.build(chunks)
-        references = self.citation_builder.build_references(chunks)
-        context = self.citation_builder.build_context_string(chunks)
-
-        prompt = get_answer_prompt("analysis", language, facts=facts, context=context)
-
-        if not chunks:
-            return AgentResponse(
-                question=facts,
-                answer="I could not find relevant Bangladeshi law for this scenario." if language == "en"
-                else "এই পরিস্থিতির জন্য কোনো প্রাসঙ্গিক বাংলাদেশী আইন পাওয়া যায়নি।",
-                language_detected=language,
-                query_type="fact_analysis",
-                confidence="low",
-                execution_time_ms=(time.time() - t0) * 1000,
-            )
+        state: AgentState = {
+            "question": facts,
+            "language": language,
+            "user_type": "general",
+            "rewritten_question": facts,
+            "query_type": "fact_analysis",
+            "legal_domain": self.intent_detector.detect_legal_domain(facts),
+            "routed_agent": "",
+            "agent_output": "",
+            "retrieved_chunks": [],
+            "context": "",
+            "answer": "",
+            "citations": [],
+            "references": [],
+            "confidence": "medium",
+            "needs_rewrite": True,
+            "execution_time_ms": 0,
+            "token_usage": {},
+            "error": None,
+        }
 
         try:
-            llm = get_llm_service().llm
-            response = llm.invoke(prompt, max_tokens=2048)
-            answer = response.content if hasattr(response, "content") else str(response)
+            result = self.workflow.invoke(state)
         except Exception as e:
-            answer = f"Analysis error: {str(e)}"
+            logger.exception("Analyze workflow failed")
+            return AgentResponse(
+                question=facts,
+                answer=f"Analysis error: {str(e)}",
+                language_detected=language,
+                error=str(e),
+            )
+
+        chunks_raw = result.get("retrieved_chunks", [])
+        retrieved_chunks: list[RetrievedChunk] = []
+        for c in chunks_raw:
+            if isinstance(c, RetrievedChunk):
+                retrieved_chunks.append(c)
+            elif isinstance(c, dict):
+                retrieved_chunks.append(RetrievedChunk(**c))
 
         return AgentResponse(
             question=facts,
-            answer=answer,
-            answer_markdown=answer,
+            answer=result.get("answer", ""),
+            answer_markdown=result.get("answer", ""),
             language_detected=language,
             query_type="fact_analysis",
-            confidence="medium" if len(chunks) >= 3 else "low",
-            citations=citations,
-            retrieved_chunks=chunks,
-            references=references,
+            confidence=result.get("confidence", "medium"),
+            citations=result.get("citations", []),
+            retrieved_chunks=retrieved_chunks,
+            references=result.get("references", []),
             execution_time_ms=(time.time() - t0) * 1000,
+            token_usage=result.get("token_usage", {}),
+            error=result.get("error"),
         )
+
+    # ── Summarize: via workflow with intent override ───────────────────
 
     def summarize(
         self,
@@ -192,40 +221,57 @@ class LegalBeeAgent:
         if not language:
             language = self.intent_detector.detect_language(act_name)
 
-        chunks = self.retriever.retrieve_by_act(act_name, top_k=24)
-        citations = self.citation_builder.build(chunks)
-        references = self.citation_builder.build_references(chunks)
-        context = self.citation_builder.build_context_string(chunks, max_chunks=20)
-
-        if not chunks:
-            return AgentResponse(
-                question=f"Summarize: {act_name}",
-                answer=f"No information found for '{act_name}'." if language == "en"
-                else f"'{act_name}' এর জন্য কোনো তথ্য পাওয়া যায়নি।",
-                language_detected=language,
-                query_type="act_summary",
-                confidence="low",
-                execution_time_ms=(time.time() - t0) * 1000,
-            )
-
-        prompt = get_answer_prompt("summary", language, act_name=act_name, context=context)
+        state: AgentState = {
+            "question": act_name,
+            "language": language,
+            "user_type": "general",
+            "rewritten_question": f"Summarize the {act_name}",
+            "query_type": "act_summary",
+            "legal_domain": "general",
+            "routed_agent": "",
+            "agent_output": "",
+            "retrieved_chunks": [],
+            "context": "",
+            "answer": "",
+            "citations": [],
+            "references": [],
+            "confidence": "medium",
+            "needs_rewrite": False,
+            "execution_time_ms": 0,
+            "token_usage": {},
+            "error": None,
+        }
 
         try:
-            llm = get_llm_service().llm
-            response = llm.invoke(prompt, max_tokens=3072)
-            answer = response.content if hasattr(response, "content") else str(response)
+            result = self.workflow.invoke(state)
         except Exception as e:
-            answer = f"Summary error: {str(e)}"
+            logger.exception("Summary workflow failed")
+            return AgentResponse(
+                question=f"Summarize: {act_name}",
+                answer=f"Summary error: {str(e)}",
+                language_detected=language,
+                error=str(e),
+            )
+
+        chunks_raw = result.get("retrieved_chunks", [])
+        retrieved_chunks: list[RetrievedChunk] = []
+        for c in chunks_raw:
+            if isinstance(c, RetrievedChunk):
+                retrieved_chunks.append(c)
+            elif isinstance(c, dict):
+                retrieved_chunks.append(RetrievedChunk(**c))
 
         return AgentResponse(
             question=f"Summarize: {act_name}",
-            answer=answer,
-            answer_markdown=answer,
+            answer=result.get("answer", ""),
+            answer_markdown=result.get("answer", ""),
             language_detected=language,
             query_type="act_summary",
-            confidence="high" if len(chunks) >= 10 else "medium",
-            citations=citations,
-            retrieved_chunks=chunks,
-            references=references,
+            confidence=result.get("confidence", "medium"),
+            citations=result.get("citations", []),
+            retrieved_chunks=retrieved_chunks,
+            references=result.get("references", []),
             execution_time_ms=(time.time() - t0) * 1000,
+            token_usage=result.get("token_usage", {}),
+            error=result.get("error"),
         )

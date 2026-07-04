@@ -11,21 +11,25 @@ logger = logging.getLogger(__name__)
 
 QUERY_TYPE_PATTERNS = {
     "law_search": [
-        r"(?:show|find|search|what is|কী\s*(?:হলো|বলে)|দেখাও|খুঁজ)\s*(?:me\s+)?(?:Article|ধারা|Section|অনুচ্ছেদ)\s*\d+",
-        r"(?:article|section|ধারা|অনুচ্ছেদ)\s*\d+[A-Za-z]*",
+        r"(?:show|find|search|what is|where is|কী\s*(?:হলো|বলে)|দেখাও|খুঁজ)\s*(?:me\s+)?(?:Article|ধারা|Section|অনুচ্ছেদ)\s*\d+",
+        r"^(?:article|section|ধারা|অনুচ্ছেদ)\s*\d+[A-Za-z]*",
     ],
     "act_summary": [
         r"summar[iy]ze|সারসংক্ষেপ|explain\s+(?:the\s+)?(?:Act|আইন)",
         r"what\s+(?:does|is)\s+the\s+.+\s+(?:Act|আইন)\s+(?:say|about)",
+        r"give\s+me\s+(?:a\s+)?summary|overview\s+of",
     ],
     "amendment_question": [
         r"amendment|সংশোধন",
-        r"what\s+changed|কী\s+পরিবর্তন",
+        r"what\s+changed|কী\s+পরিবর্তন|what\s+is\s+new",
+        r"before\s+and\s+after|compare|তুলনা",
     ],
     "fact_analysis": [
-        r"my\s+(?:landlord|employer|boss|tenant|neighbor)",
-        r"আমার\s+(?:বাড়িওয়ালা|মনিব|প্রতিবেশী)",
-        r"happened\s+to\s+me|what\s+can\s+I\s+do|আমি\s+কী\s+করতে\s+পারি",
+        r"my\s+(?:landlord|employer|boss|tenant|neighbor|husband|wife)",
+        r"আমার\s+(?:বাড়িওয়ালা|মনিব|প্রতিবেশী|স্বামী|স্ত্রী)",
+        r"happened\s+to\s+me|what\s+can\s+I\s+do|what\s+are\s+my\s+rights",
+        r"আমি\s+কী\s+করতে\s+পারি|আমার\s+কী\s+অধিকার",
+        r"someone\s+(?:stole|took|damaged|did)|কে\s+(?:নিয়ে|করেছে)",
     ],
 }
 
@@ -47,7 +51,7 @@ class IntentDetector:
         text = question.lower()
         for qtype, patterns in QUERY_TYPE_PATTERNS.items():
             for pattern in patterns:
-                if re.search(pattern, text):
+                if re.search(pattern, text, re.IGNORECASE):
                     return qtype
         if retrieved_count == 0:
             return "no_results"
@@ -57,7 +61,7 @@ class IntentDetector:
         text = question.lower()
         for domain, patterns in LEGAL_DOMAIN_PATTERNS.items():
             for pattern in patterns:
-                if re.search(pattern, text):
+                if re.search(pattern, text, re.IGNORECASE):
                     return domain
         return "general"
 
