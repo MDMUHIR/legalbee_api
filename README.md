@@ -1,3 +1,13 @@
+---
+title: Legal Bee
+emoji: ⚖️
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+pinned: false
+short_description: A legal ai assistant
+---
+
 # Legal Bee
 
 A production-grade **Retrieval-Augmented Generation (RAG)** system for **Bangladeshi law**. Answers legal questions strictly from a vector database of Bangladeshi Acts, Ordinances, Rules, and Amendments — never hallucinates. Supports **English** and **Bengali (বাংলা)** queries.
