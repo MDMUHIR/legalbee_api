@@ -1,85 +1,98 @@
-"""Legal-aware chunking: respect section boundaries, split long sections at clause level."""
+"""Legal-aware chunking: respect section boundaries, split long sections at clause level.
+
+Every chunk is self-contained — section context is prepended to ALL chunks
+from the same section, not just the first one. This ensures each chunk is
+independently retrievable and understandable without its neighbours.
+
+Citations reference the primary legal provision only — never concatenate
+unrelated clause numbers. Non-legal identifiers like (review), (GEMS), (PMIS)
+are excluded by the structure parser's clause validator.
+"""
 
 import re
 import uuid
 import logging
+from enum import Enum
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ingestion.utils import estimate_tokens
+from ingestion.utils import estimate_tokens, BENGALI_DIGITS
 from ingestion.structure_parser import ParsedDocument, LegalSection, LegalClause
 from ingestion.metadata import LawMetadata
 
 logger = logging.getLogger(__name__)
 
-BENGALI_SENTENCE_END = "।"
-
 RE_SENTENCE = re.compile(r"([^।।\n]+[।।])")
+
+
+class ChunkType(str, Enum):
+    ACT = "act"
+    CHAPTER = "chapter"
+    PART = "part"
+    ARTICLE = "article"
+    SECTION = "section"
+    CLAUSE = "clause"
+    SUB_CLAUSE = "sub_clause"
+    SCHEDULE = "schedule"
+    APPENDIX = "appendix"
+    EXPLANATION = "explanation"
+    DEFINITION = "definition"
+    PREAMBLE = "preamble"
+    AMENDMENT = "amendment"
 
 
 @dataclass
 class Chunk:
-    """A legal text chunk with metadata ready for embedding and storage."""
-
     chunk_id: str
     text: str
     token_count: int
-    chunk_type: str = "section"
+    chunk_type: ChunkType = ChunkType.SECTION
     citation: str = ""
     hierarchy: dict[str, str] = field(default_factory=dict)
     references: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    valid: bool = True
+    validation: dict[str, bool] = field(default_factory=lambda: {
+        "validated": True,
+        "starts_at_boundary": True,
+        "ends_at_boundary": True,
+        "is_complete_chunk": True,
+    })
+    validation_errors: list[str] = field(default_factory=list)
 
 
 class LegalChunker:
-    """Convert parsed legal structure into semantic chunks ready for embedding.
+    """Convert parsed legal structure into self-contained semantic chunks.
 
-    Chunking rules:
-      1. One section = one chunk (if it fits)
-      2. Long sections → split at clause/sub-clause boundaries
-      3. Oversized single clauses → split at sentence boundaries (`।` or `. `)
-      4. NEVER combine text from different sections into one chunk
-      5. OVERLAP only when splitting within a section (100 token equivalent)
+    Rules:
+      1. Every chunk includes section context (never starts mid-provision).
+      2. Long sections split at clause boundaries only.
+      3. Single oversized clauses split at sentence boundaries.
+      4. NEVER combine different sections into one chunk.
+      5. OVERLAP only when forced to split within a section.
 
     Token targets:
       - Target: 600-900 tokens
       - Maximum: 1000 tokens
-      - Overlap: ~100 tokens (character equivalent)
     """
 
     TARGET_TOKENS_MIN = 600
     TARGET_TOKENS_MAX = 900
     MAX_TOKENS = 1000
-    OVERLAP_TOKENS = 100
-
-    OVERLAP_CHARS = 280
 
     def __init__(
         self,
         target_min: int = TARGET_TOKENS_MIN,
         target_max: int = TARGET_TOKENS_MAX,
         max_tokens: int = MAX_TOKENS,
-        overlap_tokens: int = OVERLAP_TOKENS,
     ):
         self.target_min = target_min
         self.target_max = target_max
         self.max_tokens = max_tokens
-        self.overlap_tokens = overlap_tokens
-        self._char_per_token = 3.0
 
     def chunk(
         self, parsed_doc: ParsedDocument, metadata: LawMetadata, page_count: int = 1
     ) -> list[Chunk]:
-        """Create semantic chunks from a parsed legal document.
-
-        Args:
-            parsed_doc: Parsed document with sections and clauses.
-            metadata: Extracted document-level metadata.
-            page_count: Total pages in source PDF.
-
-        Returns:
-            List of Chunk objects with text and per-chunk metadata.
-        """
         chunks: list[Chunk] = []
 
         if parsed_doc.preamble and len(parsed_doc.preamble.strip()) > 50:
@@ -88,122 +101,121 @@ class LegalChunker:
 
         for section in parsed_doc.sections:
             section_chunks = self._chunk_section(
-                section, metadata, page_count, chunk_index_offset=len(chunks)
+                section, metadata, chunk_index_offset=len(chunks)
             )
             chunks.extend(section_chunks)
 
-        logger.info("Chunker: %d chunks from %d sections", len(chunks), len(parsed_doc.sections))
-        return chunks
+        validated = [c for c in chunks if self._validate(c)]
+        dropped = len(chunks) - len(validated)
+        if dropped:
+            logger.warning("Chunker: %d/%d chunks dropped by validation", dropped, len(chunks))
+
+        logger.info("Chunker: %d chunks from %d sections", len(validated), len(parsed_doc.sections))
+        return validated
+
+    # ── preamble ──────────────────────────────────────────────────────
 
     def _chunk_preamble(self, text: str, metadata: LawMetadata) -> list[Chunk]:
-        """Chunk the preamble (text before first section)."""
         token_count = estimate_tokens(text)
-        if token_count <= self.target_max:
+        if token_count <= self.max_tokens:
             chunk = self._make_chunk(
                 text=text,
                 metadata=metadata,
-                section=0,
-                clause="",
+                section="",
+                chunk_type=ChunkType.PREAMBLE,
                 chunk_idx=0,
-                total_in_section=1,
             )
             return [chunk]
 
         parts = self._split_at_sentences(text)
-        return self._build_chunks_from_parts(parts, metadata, section_num="0")
+        result: list[Chunk] = []
+        for i, p in enumerate(parts):
+            result.append(self._make_chunk(
+                text=p,
+                metadata=metadata,
+                section="",
+                chunk_type=ChunkType.PREAMBLE,
+                chunk_idx=i,
+            ))
+        return result
+
+    # ── section chunking ──────────────────────────────────────────────
 
     def _chunk_section(
         self,
         section: LegalSection,
         metadata: LawMetadata,
-        page_count: int,
         chunk_index_offset: int = 0,
     ) -> list[Chunk]:
-        """Chunk a single legal section, respecting clause boundaries.
-
-        Strategy:
-          1. If section has clauses, try to group clauses into chunks.
-          2. If section is short enough, keep as one chunk.
-          3. Otherwise, split at sentence boundaries.
-        """
         if section.clauses:
-            return self._chunk_section_by_clauses(
-                section, metadata, page_count, chunk_index_offset
+            return self._chunk_by_clauses(
+                section, metadata, chunk_index_offset
             )
 
-        return self._chunk_section_text(
-            section.content,
-            metadata,
-            section.section_number,
-            section.chapter,
-            section.article,
-            section.section_title,
-            chunk_index_offset,
+        return self._chunk_plain_section(
+            section, metadata, chunk_index_offset
         )
 
-    def _chunk_section_by_clauses(
+    def _chunk_by_clauses(
         self,
         section: LegalSection,
         metadata: LawMetadata,
-        page_count: int,
         chunk_index_offset: int,
     ) -> list[Chunk]:
-        """Group clauses into chunks that fit the target token range.
-
-        The section intro text (before first clause) is prepended to the first chunk.
-        Clauses are never split mid-content unless they individually exceed max_tokens.
-        """
+        """Group clauses into chunks. Every chunk gets the section header prepended."""
         chunks: list[Chunk] = []
-        intro_end = 0
 
-        if section.clauses:
-            intro_end = section.clauses[0].start_char
-            intro_text = section.content[:intro_end].strip()
-        else:
-            intro_text = ""
+        if not section.clauses:
+            return chunks
 
-        intro_tokens = estimate_tokens(intro_text) if intro_text else 0
+        intro_end = section.clauses[0].start_char
+        intro_text = section.content[:intro_end].strip()
 
         current_group: list[LegalClause] = []
-        current_tokens = intro_tokens
+        current_tokens = estimate_tokens(intro_text)
+        # Section header is added to every chunk below
+        header_tokens = estimate_tokens(intro_text)
 
         def flush_group() -> None:
-            nonlocal current_tokens, intro_tokens
             if not current_group:
                 return
-            group_text_parts = []
-            if intro_text and len(chunks) == 0:
-                group_text_parts.append(intro_text)
+            group_parts: list[str] = []
+            clause_ids: list[str] = []
+            sub_clause_ids: list[str] = []
 
-            clause_refs: list[str] = []
-            sub_clause_refs: list[str] = []
             for cl in current_group:
-                group_text_parts.append(f"({cl.identifier}) {cl.text}")
-                clause_refs.append(cl.identifier)
+                group_parts.append(f"({cl.identifier}) {cl.text}")
+                clause_ids.append(cl.identifier)
                 for sub in cl.children:
-                    sub_clause_refs.append(sub.identifier)
+                    sub_clause_ids.append(sub.identifier)
 
-            combined = "\n".join(group_text_parts)
+            body = "\n".join(group_parts)
 
-            chunk_idx = chunk_index_offset + len(chunks)
-            total = (len(section.clauses) // max(1, len(current_group))) + 2
+            primary_clause = clause_ids[0] if clause_ids else ""
+            primary_sub = sub_clause_ids[0] if sub_clause_ids else ""
+
+            chunk_type = ChunkType.CLAUSE
+            if not primary_clause:
+                chunk_type = ChunkType.SECTION
+            if primary_sub:
+                chunk_type = ChunkType.SUB_CLAUSE
 
             chunks.append(
                 self._make_chunk(
-                    text=combined,
+                    text=body,
                     metadata=metadata,
                     section=section.section_number,
                     chapter=section.chapter,
                     article=section.article,
                     section_title=section.section_title,
-                    clause=", ".join(clause_refs),
-                    sub_clause=", ".join(sub_clause_refs),
-                    chunk_idx=chunk_idx,
-                    total_in_section=total,
+                    clause=primary_clause,
+                    sub_clause=primary_sub,
+                    inserted_section=section.inserted_section_number,
+                    chunk_type=chunk_type,
+                    chunk_idx=chunk_index_offset + len(chunks),
                 )
             )
             current_group.clear()
-            current_tokens = 0
 
         for clause in section.clauses:
             clause_text = f"({clause.identifier}) {clause.text}"
@@ -211,7 +223,7 @@ class LegalChunker:
 
             if clause_tokens > self.max_tokens:
                 flush_group()
-                clause_chunks = self._chunk_section_text(
+                sub_chunks = self._chunk_plain_text(
                     clause_text,
                     metadata,
                     section.section_number,
@@ -221,11 +233,12 @@ class LegalChunker:
                     chunk_index_offset + len(chunks),
                     clause_ref=clause.identifier,
                 )
-                chunks.extend(clause_chunks)
+                chunks.extend(sub_chunks)
                 continue
 
             if current_tokens + clause_tokens > self.max_tokens and current_group:
                 flush_group()
+                current_tokens = header_tokens
 
             current_group.append(clause)
             current_tokens += clause_tokens
@@ -233,19 +246,32 @@ class LegalChunker:
         flush_group()
 
         if not chunks:
-            chunks = self._chunk_section_text(
-                section.content,
-                metadata,
-                section.section_number,
-                section.chapter,
-                section.article,
-                section.section_title,
-                chunk_index_offset,
-            )
+            return self._chunk_plain_section(section, metadata, chunk_index_offset)
+
+        for c in chunks:
+            c.text = f"{intro_text}\n\n{c.text}".strip()
+            c.token_count = estimate_tokens(c.text)
 
         return chunks
 
-    def _chunk_section_text(
+    def _chunk_plain_section(
+        self,
+        section: LegalSection,
+        metadata: LawMetadata,
+        chunk_index_offset: int,
+    ) -> list[Chunk]:
+        return self._chunk_plain_text(
+            section.content,
+            metadata,
+            section.section_number,
+            section.chapter,
+            section.article,
+            section.section_title,
+            chunk_index_offset,
+            chunk_type=ChunkType.SECTION,
+        )
+
+    def _chunk_plain_text(
         self,
         text: str,
         metadata: LawMetadata,
@@ -255,15 +281,10 @@ class LegalChunker:
         section_title: str = "",
         chunk_index_offset: int = 0,
         clause_ref: str = "",
+        chunk_type: ChunkType = ChunkType.SECTION,
     ) -> list[Chunk]:
-        """Chunk plain section text (no clause structure detected).
-
-        Uses sentence boundaries for splitting, ensuring chunks stay within
-        token limits.
-        """
         token_count = estimate_tokens(text)
-
-        if token_count <= self.target_max:
+        if token_count <= self.max_tokens:
             chunk = self._make_chunk(
                 text=text,
                 metadata=metadata,
@@ -272,25 +293,92 @@ class LegalChunker:
                 article=article,
                 section_title=section_title,
                 clause=clause_ref,
+                chunk_type=chunk_type,
                 chunk_idx=chunk_index_offset,
-                total_in_section=1,
             )
             return [chunk]
 
         sentences = self._split_at_sentences(text)
-        return self._build_chunks_from_parts(
-            sentences,
-            metadata,
-            section_num=section_num,
-            chapter=chapter,
-            article=article,
-            section_title=section_title,
-            clause_ref=clause_ref,
-            offset=chunk_index_offset,
-        )
+        chunks: list[Chunk] = []
+        buffer: list[str] = []
+        buffer_tokens = 0
+
+        for part in sentences:
+            pt = estimate_tokens(part)
+
+            if pt > self.max_tokens:
+                if buffer:
+                    chunks.append(self._make_chunk(
+                        text=" ".join(buffer),
+                        metadata=metadata,
+                        section=section_num, chapter=chapter, article=article,
+                        section_title=section_title, clause=clause_ref,
+                        chunk_type=chunk_type,
+                        chunk_idx=chunk_index_offset + len(chunks),
+                    ))
+                    buffer.clear()
+                    buffer_tokens = 0
+
+                words = part.split()
+                sub_buf: list[str] = []
+                sub_tokens = 0
+                for w in words:
+                    wt = estimate_tokens(w)
+                    if sub_tokens + wt > self.max_tokens and sub_buf:
+                        chunks.append(self._make_chunk(
+                            text=" ".join(sub_buf),
+                            metadata=metadata,
+                            section=section_num, chapter=chapter, article=article,
+                            section_title=section_title, clause=clause_ref,
+                            chunk_type=chunk_type,
+                            chunk_idx=chunk_index_offset + len(chunks),
+                        ))
+                        sub_buf = [w]
+                        sub_tokens = wt
+                    else:
+                        sub_buf.append(w)
+                        sub_tokens += wt
+                if sub_buf:
+                    chunks.append(self._make_chunk(
+                        text=" ".join(sub_buf),
+                        metadata=metadata,
+                        section=section_num, chapter=chapter, article=article,
+                        section_title=section_title, clause=clause_ref,
+                        chunk_type=chunk_type,
+                        chunk_idx=chunk_index_offset + len(chunks),
+                    ))
+                continue
+
+            if buffer_tokens + pt > self.max_tokens and buffer:
+                chunks.append(self._make_chunk(
+                    text=" ".join(buffer),
+                    metadata=metadata,
+                    section=section_num, chapter=chapter, article=article,
+                    section_title=section_title, clause=clause_ref,
+                    chunk_type=chunk_type,
+                    chunk_idx=chunk_index_offset + len(chunks),
+                ))
+                buffer.clear()
+                buffer_tokens = 0
+
+            buffer.append(part)
+            buffer_tokens += pt
+
+        if buffer:
+            chunks.append(self._make_chunk(
+                text=" ".join(buffer),
+                metadata=metadata,
+                section=section_num, chapter=chapter, article=article,
+                section_title=section_title, clause=clause_ref,
+                chunk_type=chunk_type,
+                chunk_idx=chunk_index_offset + len(chunks),
+            ))
+
+        return chunks
+
+    # ── sentence splitting ────────────────────────────────────────────
 
     def _split_at_sentences(self, text: str) -> list[str]:
-        """Split text at sentence boundaries (Bangla `।` and English `. `)."""
         parts = RE_SENTENCE.findall(text)
         if parts:
             remaining = RE_SENTENCE.sub("", text).strip()
@@ -301,112 +389,7 @@ class LegalChunker:
         parts = re.split(r"(?<=[.!?])\s+", text)
         return [p.strip() for p in parts if p.strip()]
 
-    def _build_chunks_from_parts(
-        self,
-        parts: list[str],
-        metadata: LawMetadata,
-        section_num: str = "",
-        chapter: str = "",
-        article: str = "",
-        section_title: str = "",
-        clause_ref: str = "",
-        offset: int = 0,
-    ) -> list[Chunk]:
-        """Build chunks by accumulating sentence parts until target token range."""
-        chunks: list[Chunk] = []
-        buffer: list[str] = []
-        buffer_tokens = 0
-
-        total_est = sum(estimate_tokens(p) for p in parts)
-        est_chunks = max(1, total_est // self.target_max)
-        target_per_chunk = min(self.max_tokens, self.target_max)
-
-        def make_chunk(buf: list[str], idx: int) -> Chunk:
-            return self._make_chunk(
-                text=" ".join(buf),
-                metadata=metadata,
-                section=section_num,
-                chapter=chapter,
-                article=article,
-                section_title=section_title,
-                clause=clause_ref,
-                chunk_idx=offset + idx,
-                total_in_section=est_chunks,
-            )
-
-        for i, part in enumerate(parts):
-            pt = estimate_tokens(part)
-
-            if pt > self.max_tokens:
-                if buffer:
-                    chunks.append(make_chunk(buffer, len(chunks)))
-                    buffer.clear()
-                    buffer_tokens = 0
-
-                sub_parts = self._force_split_long_part(part)
-                for sp in sub_parts:
-                    chunks.append(
-                        self._make_chunk(
-                            text=sp,
-                            metadata=metadata,
-                            section=section_num,
-                            chapter=chapter,
-                            article=article,
-                            section_title=section_title,
-                            clause=clause_ref,
-                            chunk_idx=offset + len(chunks),
-                            total_in_section=est_chunks + len(sub_parts),
-                        )
-                    )
-                continue
-
-            if buffer_tokens + pt > target_per_chunk and buffer:
-                chunks.append(make_chunk(buffer, len(chunks)))
-                overlap_part = self._get_overlap(buffer[-1])
-                buffer = [overlap_part] if overlap_part else []
-                buffer_tokens = estimate_tokens(overlap_part) if overlap_part else 0
-
-            buffer.append(part)
-            buffer_tokens += pt
-
-        if buffer:
-            chunks.append(make_chunk(buffer, len(chunks)))
-
-        return chunks
-
-    def _force_split_long_part(self, text: str) -> list[str]:
-        """Brute-force split a very long sentence at word boundaries."""
-        words = text.split()
-        if len(words) < 10:
-            return [text]
-
-        result: list[str] = []
-        buf: list[str] = []
-        buf_tokens = 0
-
-        for w in words:
-            w_tokens = estimate_tokens(w)
-            if buf_tokens + w_tokens > self.max_tokens and buf:
-                result.append(" ".join(buf))
-                buf = [w]
-                buf_tokens = w_tokens
-            else:
-                buf.append(w)
-                buf_tokens += w_tokens
-
-        if buf:
-            result.append(" ".join(buf))
-        return result or [text]
-
-    def _get_overlap(self, last_sentence: str) -> str:
-        """Get the overlap fragment from the last sentence for context continuity."""
-        words = last_sentence.split()
-        if len(words) <= 5:
-            return last_sentence
-
-        overlap_words = max(3, int(self.OVERLAP_CHARS / (self._char_per_token)))
-        overlap_words = min(overlap_words, len(words) - 1)
-        return " ".join(words[-overlap_words:])
+    # ── chunk factory ─────────────────────────────────────────────────
 
     def _make_chunk(
         self,
@@ -418,20 +401,14 @@ class LegalChunker:
         section_title: str = "",
         clause: str = "",
         sub_clause: str = "",
+        inserted_section: str = "",
+        chunk_type: ChunkType = ChunkType.SECTION,
         chunk_idx: int = 0,
-        total_in_section: int = 1,
     ) -> Chunk:
-        """Create a Chunk with canonical metadata, hierarchy, citation and references.
-
-        The payload is structured for optimal RAG retrieval:
-          - No duplicate fields (act_name, not law_name)
-          - hierarchy groups the legal position
-          - citation is auto-generated for the LLM
-          - references are structured objects
-        """
         chunk_id = f"{metadata.source_pdf}:s{section}:c{chunk_idx}"
 
         hierarchy = {
+            "part": "",
             "chapter": chapter or "",
             "article": article or "",
             "section": str(section) if section else "",
@@ -439,16 +416,7 @@ class LegalChunker:
             "sub_clause": str(sub_clause) if sub_clause else "",
         }
 
-        chunk_type = self._determine_chunk_type(
-            section=section,
-            chapter=chapter,
-            article=article,
-            clause=clause,
-            sub_clause=sub_clause,
-            text=text,
-        )
-
-        citation = self._build_citation(metadata, hierarchy)
+        citation = self._build_citation(metadata, hierarchy, section_title, inserted_section)
 
         refs = self._build_references(metadata)
 
@@ -481,80 +449,172 @@ class LegalChunker:
             metadata=doc_meta,
         )
 
+    # ── classification ────────────────────────────────────────────────
+
     @staticmethod
-    def _determine_chunk_type(
+    def _classify_chunk_type(
         section: str,
         chapter: str,
         article: str,
         clause: str,
         sub_clause: str,
         text: str,
-    ) -> str:
-        """Classify the chunk into one of the legal provision types.
-
-        Priority: sub_clause > clause > section > article > chapter > preamble
-        Special types are detected from text content (schedule, definition, amendment).
-        """
+    ) -> ChunkType:
         if not section and not article and not chapter:
-            stripped = text.lower()
-            if any(kw in stripped[:200] for kw in ["schedule", "তফসিল", "পরিশিষ্ট"]):
-                return "schedule"
-            if "appendix" in stripped[:200]:
-                return "appendix"
-            if any(kw in stripped[:200] for kw in ["সংক্ষিপ্ত শিরোনাম", "preamble", "প্রস্তাবনা", "যেহেতু"]):
-                return "preamble"
-            return "preamble"
+            t = text.lower()
+            if any(kw in t[:200] for kw in ["schedule", "তফসিল", "পরিশিষ্ট"]):
+                return ChunkType.SCHEDULE
+            if "appendix" in t[:200]:
+                return ChunkType.APPENDIX
+            if any(kw in t[:200] for kw in ["explanation", "ব্যাখ্যা"]):
+                return ChunkType.EXPLANATION
+            if any(kw in t[:200] for kw in ["definition", "সংজ্ঞা"]):
+                return ChunkType.DEFINITION
+            return ChunkType.PREAMBLE
 
         if sub_clause:
-            return "clause"
+            return ChunkType.SUB_CLAUSE
         if clause:
-            return "clause"
+            return ChunkType.CLAUSE
         if article:
-            return "article"
+            return ChunkType.ARTICLE
         if section:
-            return "section"
+            return ChunkType.SECTION
         if chapter:
-            return "chapter"
-        return "act"
+            return ChunkType.CHAPTER
+        return ChunkType.ACT
+
+    # ── citation ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_citation(metadata: LawMetadata, hierarchy: dict[str, str]) -> str:
-        """Build a human-readable legal citation string.
+    def _build_citation(
+        metadata: LawMetadata,
+        hierarchy: dict[str, str],
+        section_title: str = "",
+        inserted_section: str = "",
+    ) -> str:
+        """Build a clean legal citation.
 
-        Examples:
-          'সরকারি চাকরি (সংশোধন) আইন, ২০২৬, ধারা ২'
-          'Representation of the People (Amendment) Act, 2026, Section 35, Clause (2)'
+        For amendment acts, includes the inserted/amended provision:
+          'সরকারি চাকরি (সংশোধন) আইন, ২০২৬, Section ২ (নতুন ধারা ৩৭ক)'
+        For regular acts:
+          'রাজস্ব আইন, ২০২৩, Section 35, Clause (2)'
         """
         name = metadata.act_name or metadata.bangla_name
-        parts = [name] if name else []
+        if not name:
+            return ""
 
-        if hierarchy.get("chapter"):
-            parts.append(f"Chapter {hierarchy['chapter']}")
-        if hierarchy.get("article"):
-            parts.append(f"Article {hierarchy['article']}")
-        if hierarchy.get("section"):
-            parts.append(f"Section {hierarchy['section']}")
-        if hierarchy.get("clause"):
-            parts.append(f"Clause ({hierarchy['clause']})")
-        if hierarchy.get("sub_clause"):
-            parts.append(f"Sub-clause ({hierarchy['sub_clause']})")
+        parts: list[str] = [name]
 
-        return ", ".join(parts) if parts else ""
+        h = hierarchy
+        if h.get("part"):
+            parts.append(f"Part {h['part']}")
+        if h.get("chapter"):
+            parts.append(f"Chapter {h['chapter']}")
+        if h.get("article"):
+            parts.append(f"Article {h['article']}")
+        if h.get("section"):
+            sec_part = f"Section {h['section']}"
+            if inserted_section:
+                sec_part += f" (inserted Section {inserted_section})"
+            elif section_title:
+                clean_title = section_title.strip()
+                if 3 < len(clean_title) < 100 and not any(
+                    kw in clean_title for kw in ["P.O.", "সনের", "নং", "No.", "of"]
+                ):
+                    sec_part += f" ({clean_title})"
+            parts.append(sec_part)
+        if h.get("clause"):
+            parts.append(f"Clause ({h['clause']})")
+        if h.get("sub_clause"):
+            parts.append(f"Sub-clause ({h['sub_clause']})")
+
+        return ", ".join(parts)
+
+    # ── references ────────────────────────────────────────────────────
 
     @staticmethod
     def _build_references(metadata: LawMetadata) -> list[dict[str, str]]:
-        """Build structured references from metadata.
-
-        The amendment_of field becomes a reference of type 'amends'.
-        Cross-references to other laws become 'references' entries.
-        """
         refs: list[dict[str, str]] = []
 
         if metadata.amendment_of:
             refs.append({"type": "amends", "target": metadata.amendment_of})
 
-        for cross_ref in metadata.cross_references:
-            if cross_ref.strip():
-                refs.append({"type": "references", "target": cross_ref.strip()})
+        for ref in metadata.references:
+            if ref.target.strip():
+                refs.append({"type": ref.ref_type, "target": ref.target})
 
         return refs
+
+    # ── validation ────────────────────────────────────────────────────
+
+    def _validate(self, chunk: Chunk) -> bool:
+        """Validate chunk quality and populate validation metadata.
+
+        Checks:
+          - Text is non-empty and reasonable length
+          - Does not start with a closing parenthesis
+          - Required metadata fields present
+          - Hierarchy consistent with chunk_type
+          - Citation present for non-preamble chunks
+
+        Sets chunk.validation with boundary/quality indicators.
+        """
+        errors: list[str] = []
+        text = chunk.text.strip()
+        v = chunk.validation
+
+        if not text:
+            errors.append("empty text")
+            v["is_complete_chunk"] = False
+        if len(text) < 20:
+            errors.append(f"text too short ({len(text)} chars)")
+            v["is_complete_chunk"] = False
+
+        first_word = text[:80].lstrip()
+        if first_word.startswith((")", "）")):
+            errors.append(f"starts inside provision: '{text[:50]}'")
+            v["starts_at_boundary"] = False
+
+        last_line = text.split("\n")[-1].strip() if "\n" in text else text[-100:]
+        if any(
+            kw in last_line.lower()
+            for kw in ["p.o. no.", "সংক্ষিপ্ত", "রহিতকরণ", "সনের", "নং আইন", "অধ্যায়"]
+        ):
+            pass
+        elif not re.search(r"[।.!?]$|।[\"'""]$", last_line) and chunk.chunk_type not in (
+            ChunkType.PREAMBLE, ChunkType.SCHEDULE
+        ):
+            paragraph_endings = r"(?:citation|amendment|provision|proviso|thereunder|accordingly|thereof)[\s.]*$"
+            if not re.search(paragraph_endings, last_line.lower()):
+                v["ends_at_boundary"] = False
+
+        if not chunk.metadata.get("act_name") and not chunk.metadata.get("bangla_name"):
+            errors.append("missing act name")
+        if not chunk.metadata.get("year") or chunk.metadata.get("year") == 0:
+            errors.append("missing or zero year")
+        if chunk.chunk_type == ChunkType.SECTION and not (
+            chunk.hierarchy.get("section") or chunk.metadata.get("hierarchy", {}).get("section")
+        ):
+            errors.append("section type but no section in hierarchy")
+        if chunk.chunk_type == ChunkType.CLAUSE and not (
+            chunk.hierarchy.get("clause") or chunk.metadata.get("hierarchy", {}).get("clause")
+        ):
+            errors.append("clause type but no clause in hierarchy")
+        if chunk.citation == "" and chunk.chunk_type != ChunkType.PREAMBLE:
+            errors.append("missing citation")
+            v["is_complete_chunk"] = False
+
+        if errors:
+            chunk.valid = False
+            chunk.validation_errors = errors
+            v["validated"] = False
+            v["starts_at_boundary"] = False
+            v["ends_at_boundary"] = False
+            v["is_complete_chunk"] = False
+            logger.warning("Rejected chunk %s: %s", chunk.chunk_id, errors)
+            return False
+
+        chunk.valid = True
+        v["validated"] = True
+        return True

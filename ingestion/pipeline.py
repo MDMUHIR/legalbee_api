@@ -318,9 +318,10 @@ class IngestionPipeline:
 
             texts = [chunk.text for chunk in chunks]
             metadata_list = [chunk.metadata for chunk in chunks]
-            chunk_types = [chunk.chunk_type for chunk in chunks]
+            chunk_types = [chunk.chunk_type.value for chunk in chunks]
             citations = [chunk.citation for chunk in chunks]
             references_list = [chunk.references for chunk in chunks]
+            validations = [chunk.validation for chunk in chunks]
 
             logger.info(
                 "Embedding %d chunks for '%s' (%d chars avg)",
@@ -341,6 +342,7 @@ class IngestionPipeline:
                 chunk_types=chunk_types,
                 citations=citations,
                 references_list=references_list,
+                validations=validations,
                 embeddings=embedding_vectors,
                 batch_size=self.qdrant_batch_size,
             )

@@ -33,12 +33,57 @@ RE_CHAPTER = re.compile(
 
 RE_CLAUSE = re.compile(
     r"\s*[(（]\s*"
-    r"((?:[{0}]|[a-zA-Z])[a-zA-Z0-9{0}]*|[ক-হড়-য়]+)"
-    r"\s*[)）]\s*".format(BENGALI_DIGITS)
+    r"([^{)）\s]+)"
+    r"\s*[)）]\s*"
 )
+
+VALID_CLAUSE_SPECIAL = frozenset({"xial", "xiaa", "bis", "ter"})
+
+
+def _is_valid_clause_identifier(identifier: str) -> bool:
+    """Return True only if the identifier looks like a genuine legal clause marker.
+
+    Legal clause markers in Bangladeshi law:
+      - (১), (12), (1)   — digits, 1-3 chars
+      - (ক), (খ)          — single Bangla consonant
+      - (a), (i), (aa), (ii) — 1-3 lowercase ASCII letters
+      - (xial), (xiaa)    — special known identifiers
+
+    Explicitly EXCLUDED (common false positives in parenthetical prose):
+      - English words: (review), (Amendment), (Act), (except)
+      - Acronyms: (GEMS), (PMIS), (EVM)
+      - Any identifier longer than 4 chars
+      - Any identifier containing uppercase after the first char
+    """
+    if not identifier or len(identifier) > 4:
+        return False
+
+    if identifier.lower() in VALID_CLAUSE_SPECIAL:
+        return True
+
+    if all(c in (BENGALI_DIGITS + "0123456789") for c in identifier):
+        return len(identifier) <= 3
+
+    if len(identifier) == 1 and "\u0995" <= identifier <= "\u09B9":
+        return True
+
+    if (
+        identifier.isascii()
+        and identifier.isalpha()
+        and identifier.islower()
+        and len(identifier) <= 3
+    ):
+        return True
+
+    return False
 
 RE_CHAPTER_EN = re.compile(
     r"(?:^|\n)\s*CHAPTER\s+([IVXLCDM]+|\d+)\b", re.IGNORECASE
+)
+
+RE_INSERTED_SECTION = re.compile(
+    r"(?:ধারা|Section|Article)\s*"
+    r"([{0}]+[ক-হ]?|\d+[A-Za-z]?)".format(BENGALI_DIGITS)
 )
 
 RE_VAGUE_SECTION = re.compile(
@@ -62,10 +107,16 @@ class LegalClause:
 
 @dataclass
 class LegalSection:
-    """Represents a single legal section (ধারা) with its clauses."""
+    """Represents a single legal section (ধারা) with its clauses.
+
+    For amendment acts, `inserted_section_number` captures the section
+    number being inserted into the target act (e.g., section 2 of act-1630
+    inserts section 37A into the Government Service Act).
+    """
 
     section_number: str = ""
     section_title: str = ""
+    inserted_section_number: str = ""
     chapter: str = ""
     article: str = ""
     content: str = ""
@@ -138,9 +189,12 @@ class StructureParser:
             if not article_num:
                 article_num = self._extract_article(section_text[:300])
 
+            inserted_num = self._extract_inserted_section(section_text)
+
             section = LegalSection(
                 section_number=sec_num,
                 section_title=sec_title_clean,
+                inserted_section_number=inserted_num,
                 chapter=current_chapter,
                 article=article_num,
                 content=section_text.strip(),
@@ -287,6 +341,28 @@ class StructureParser:
             return m.group(1)
         return ""
 
+    def _extract_inserted_section(self, section_text: str) -> str:
+        """Extract the section number being inserted or amended into the target act.
+
+        In amendment acts, each section inserts/replaces a specific provision
+        in the target law. For example:
+          - 'ধারা ৩৭ এর পর নিম্নরূপ নূতন ধারা ৩৭ক সন্নিবেশিত'
+          - 'এর ধারা ৩৭ এর পর নিম্নরূপ নূতন ধারা'
+        We detect the section being inserted (e.g., 37A).
+        """
+        patterns = [
+            r"নূতন\s+ধারা\s+([{0}]+[ক-হ]?)".format(BENGALI_DIGITS),
+            r"নতুন\s+ধারা\s+([{0}]+[ক-হ]?)".format(BENGALI_DIGITS),
+            r"ধারা\s+([{0}]+[ক-হ]?)\s+সন্নিবেশ".format(BENGALI_DIGITS),
+            r"(?:নূতন|নতুন)\s*Article\s+(\d+[A-Za-z]*)",
+        ]
+
+        for pattern in patterns:
+            m = re.search(pattern, section_text[:500])
+            if m:
+                return m.group(1)
+        return ""
+
     def _parse_clauses(self, section_text: str, section_num: str) -> list[LegalClause]:
         """Parse sub-sections, clauses, and sub-clauses within a section.
 
@@ -295,23 +371,29 @@ class StructureParser:
             (ক) → clause (level 2)
               (অ) or (aa) → sub-clause (level 3)
 
-        Context is used to disambiguate: when already inside a clause (level 2),
-        new single-letter Bangla markers are treated as sub-clauses (level 3).
+        Only genuine legal clause identifiers are accepted.
+        English words in parentheses like (review), (GEMS) are skipped.
         """
-        clause_matches = list(RE_CLAUSE.finditer(section_text))
+        raw_matches = list(RE_CLAUSE.finditer(section_text))
+        valid_matches = [(m, m.group(1).strip()) for m in raw_matches]
+        valid_matches = [
+            (m, ident) for m, ident in valid_matches
+            if _is_valid_clause_identifier(ident)
+        ]
 
-        if len(clause_matches) < 2:
+        if len(valid_matches) < 2:
             return []
 
         clauses: list[LegalClause] = []
         clause_stack: list[LegalClause] = []
 
-        for i, m in enumerate(clause_matches):
-            identifier = m.group(1).strip()
+        for i, (m, identifier) in enumerate(valid_matches):
             clause_start = m.end()
 
             clause_end = (
-                clause_matches[i + 1].start() if i + 1 < len(clause_matches) else len(section_text)
+                valid_matches[i + 1][0].start()
+                if i + 1 < len(valid_matches)
+                else len(section_text)
             )
 
             clause_text = section_text[clause_start:clause_end].strip()
@@ -343,30 +425,29 @@ class StructureParser:
     ) -> int:
         """Determine nesting level of a clause identifier, using stack context.
 
-        Level 1: (১), (1)  — sub-section
-        Level 2: (ক), (a)  — clause
-        Level 3: (অ), (aa), (i), (I) — sub-clause (when inside a clause)
-
-        When already inside a Level 2 clause, single Bangla letters become Level 3.
+        Level 1: (১), (1)  — sub-section (numeric)
+        Level 2: (ক), (a)  — clause (single char, Bangla consonant or ASCII letter)
+        Level 3: (অ), (aa), (i), (ii) — sub-clause (inside a clause)
         """
-        is_bangla_single = (
-            len(identifier) == 1
-            and "\u0980" <= identifier <= "\u09ff"
-            and not all(c in BENGALI_DIGITS for c in identifier)
-        )
-
-        if identifier.isdigit() or all(c in BENGALI_DIGITS for c in identifier):
+        is_digits = all(c in (BENGALI_DIGITS + "0123456789") for c in identifier)
+        if is_digits:
             return 1
 
-        is_inside_clause = clause_stack and any(c.level == 2 for c in clause_stack)
+        is_bangla_consonant = (
+            len(identifier) == 1 and "\u0995" <= identifier <= "\u09B9"
+        )
 
-        if is_inside_clause and is_bangla_single:
+        is_inside_clause = clause_stack and any(c.level >= 2 for c in clause_stack)
+
+        if is_inside_clause:
+            if is_bangla_consonant:
+                return 3
             return 3
 
-        if len(identifier) == 1:
-            if is_bangla_single:
-                return 2
-            if identifier.isalpha():
-                return 2
+        if is_bangla_consonant:
+            return 2
+
+        if len(identifier) == 1 and identifier.isascii() and identifier.isalpha():
+            return 2 if identifier.islower() else 3
 
         return 3

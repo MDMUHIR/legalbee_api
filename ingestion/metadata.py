@@ -10,8 +10,37 @@ from ingestion.utils import bengali_to_int, is_mostly_bangla
 logger = logging.getLogger(__name__)
 
 BENGALI_DIGITS = "০১২৩৪৫৬৭৮৯"
-ENGLISH_DIGITS = "0123456789"
 
+
+@dataclass
+class LawReference:
+    """A structured reference to another legal provision."""
+
+    ref_type: str = ""
+    target: str = ""
+
+
+@dataclass
+class LawMetadata:
+    """Structured metadata for a Bangladeshi law document."""
+
+    act_name: str = ""
+    bangla_name: str = ""
+    act_number: str = ""
+    act_year: int = 0
+    publication_date: str = ""
+    publication_date_en: str = ""
+    language: str = "mixed"
+    document_type: str = "Act"
+    amendment_of: str = ""
+    references: list[LawReference] = field(default_factory=list)
+    source_pdf: str = ""
+    volume: str = ""
+
+    @property
+    def cross_references(self) -> list[str]:
+        """Backward compat: return flat reference strings."""
+        return [r.target for r in self.references]
 RE_ACT_YEAR_NUMBER = re.compile(
     r"[(（]\s*([১২][০-৯]{3})\s*সনের?\s*([০-৯]+)\s*নং\s*(?:আইন|অধ্যাদেশ)\s*[)）]"
 )
@@ -48,24 +77,6 @@ RE_ORDINANCE = re.compile(
 )
 
 RE_VOLUME_PREFIX = re.compile(r"act-print-(\d+)")
-
-
-@dataclass
-class LawMetadata:
-    """Structured metadata for a Bangladeshi law document."""
-
-    act_name: str = ""
-    bangla_name: str = ""
-    act_number: str = ""
-    act_year: int = 0
-    publication_date: str = ""
-    publication_date_en: str = ""
-    language: str = "mixed"
-    document_type: str = "Act"
-    amendment_of: str = ""
-    cross_references: list[str] = field(default_factory=list)
-    source_pdf: str = ""
-    volume: str = ""
 
 
 class MetadataExtractor:
@@ -109,7 +120,7 @@ class MetadataExtractor:
 
         meta.document_type = self._extract_document_type(header_text, meta.act_name)
 
-        meta.cross_references = self._extract_cross_refs(text)
+        meta.references = self._extract_references(full_text=text, header_text=header_text)
 
         logger.info(
             "Metadata: '%s' (%d/%s) | type=%s lang=%s",
@@ -258,19 +269,64 @@ class MetadataExtractor:
 
         return "Act"
 
-    def _extract_cross_refs(self, text: str) -> list[str]:
-        """Extract references to other laws mentioned in this document."""
-        refs: list[str] = []
+    @staticmethod
+    def _extract_references(full_text: str, header_text: str) -> list[LawReference]:
+        """Extract structured legal references from document text.
+
+        Detects:
+          - Act references: '২০১৮ সনের ৫৭ নং আইন'
+          - Ordinance references: '২০২৫ সনের ২৬ নং অধ্যাদেশ'
+          - Section references: 'ধারা ৩৬', 'Section 5'
+          - Article references: 'Article 90E'
+          - Order references: 'President's Order No. 155 of 1972'
+        """
+        refs: list[LawReference] = []
         seen: set[str] = set()
 
-        for m in RE_CROSS_REFERENCE.finditer(text):
+        for m in RE_CROSS_REFERENCE.finditer(full_text):
             year = str(bengali_to_int(m.group(1)))
             number = str(bengali_to_int(m.group(2)))
             law_type = m.group(3)
-            ref = f"{year} সনের {number} নং {law_type}"
-            if ref not in seen:
-                refs.append(ref)
-                seen.add(ref)
+            ref_type = "act" if law_type == "আইন" else "ordinance"
+            target = f"{year} সনের {number} নং {law_type}"
+            if target not in seen:
+                refs.append(LawReference(ref_type=ref_type, target=target))
+                seen.add(target)
+
+        for m in re.compile(
+            r"President'?s?\s*Order\s*(?:\(?P\.?O\.?\s*)?No\.?\s*(\d+)\s*of\s*(\d{4})",
+            re.IGNORECASE,
+        ).finditer(full_text):
+            target = f"P.O. No. {m.group(1)} of {m.group(2)}"
+            if target not in seen:
+                refs.append(LawReference(ref_type="order", target=target))
+                seen.add(target)
+
+        for m in re.compile(
+            r"(?:Article|অনুচ্ছেদ)\s+(\d+[A-Za-z]*)",
+            re.IGNORECASE,
+        ).finditer(full_text):
+            target = f"Article {m.group(1)}"
+            if target not in seen:
+                refs.append(LawReference(ref_type="article", target=target))
+                seen.add(target)
+
+        for m in re.compile(
+            r"(?:SECTION|Section|section)\s+(\d+[A-Za-z]*)",
+        ).finditer(full_text):
+            target = f"Section {m.group(1)}"
+            if target not in seen:
+                refs.append(LawReference(ref_type="section", target=target))
+                seen.add(target)
+
+        for m in re.compile(
+            r"(?:বিধিমালা|Rules?|Regulations?)\b",
+            re.IGNORECASE,
+        ).finditer(full_text):
+            target = m.group(0).strip()
+            if target not in seen:
+                refs.append(LawReference(ref_type="rule", target=target))
+                seen.add(target)
 
         return refs
 
