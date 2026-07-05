@@ -13,7 +13,7 @@ Improvements over original:
 import os
 from dotenv import load_dotenv
 
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 
 from tools import build_tools
@@ -87,11 +87,11 @@ def _build_agent(user_type: str, lang: str):
     system_prompt = SYSTEM_BN if lang == "bn" else SYSTEM_EN
     system_prompt = system_prompt.format(user_type=user_type)
 
-    # llama-3.3-70b is free on Groq and handles Bengali text well
-    llm = ChatGroq(
-        model="llama-3.3-70b-versatile",
+    # Gemini 2.5 Flash — fast and capable for legal text
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
         temperature=0,
-        max_tokens=2048,
+        max_output_tokens=2048,
     )
 
     tools = build_tools()

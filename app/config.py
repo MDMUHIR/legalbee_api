@@ -22,8 +22,8 @@ class Config:
         default_factory=lambda: os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     )
 
-    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "groq"))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"))
+    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "gemini"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-2.5-flash"))
     llm_temperature: float = field(
         default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0"))
     )
@@ -31,8 +31,13 @@ class Config:
         default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "2048"))
     )
 
-    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
+
+    cerebras_api_key: str = field(default_factory=lambda: os.getenv("CEREBRAS_API_KEY", ""))
+    cerebras_model: str = field(default_factory=lambda: os.getenv("CEREBRAS_MODEL", "gpt-oss-120b"))
+
+    openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
+    openrouter_model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b:free"))
 
     top_k: int = field(default_factory=lambda: int(os.getenv("TOP_K", "8")))
     score_threshold: float = field(
@@ -54,10 +59,12 @@ class Config:
             errors.append("QDRANT_URL is required")
         if not self.qdrant_api_key:
             errors.append("QDRANT_API_KEY is required")
-        if self.llm_provider == "groq" and not self.groq_api_key:
-            errors.append("GROQ_API_KEY is required when LLM_PROVIDER=groq")
         if self.llm_provider == "gemini" and not self.google_api_key:
             errors.append("GOOGLE_API_KEY is required when LLM_PROVIDER=gemini")
+        if not self.cerebras_api_key:
+            errors.append("CEREBRAS_API_KEY is required (first fallback provider)")
+        if not self.openrouter_api_key:
+            errors.append("OPENROUTER_API_KEY is required (second fallback provider)")
         return errors
 
 

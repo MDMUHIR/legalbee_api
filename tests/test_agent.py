@@ -160,7 +160,7 @@ class TestConfig(unittest.TestCase):
 
     def test_config_validate_missing(self):
         from app.config import Config
-        cfg = Config(qdrant_url="", qdrant_api_key="", groq_api_key="", llm_provider="groq")
+        cfg = Config(qdrant_url="", qdrant_api_key="", google_api_key="", llm_provider="gemini", cerebras_api_key="", openrouter_api_key="")
         errors = cfg.validate()
         self.assertGreater(len(errors), 0)
 
